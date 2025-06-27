@@ -3,10 +3,9 @@ import pandas as pd
 import re
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="WhatsApp Work Hours", layout="centered")
-
-st.title("🕒 WhatsApp Work Hours Calculator")
-st.markdown("Upload your exported WhatsApp group chat (.txt) to calculate total hours worked per person, per week.")
+st.set_page_config(page_title="WhatsApp Work Hours", layout="wide")
+st.title("🕒 WhatsApp Weekly Clock In/Out Tracker")
+st.markdown("Upload your exported WhatsApp group chat (.txt) to view individual clock in/out times and total hours per week (Monday to Sunday).")
 
 uploaded_file = st.file_uploader("📂 Upload WhatsApp .txt file", type=["txt"])
 
@@ -30,38 +29,32 @@ def parse_custom_format(file_text):
                 continue
     return pd.DataFrame(records)
 
-def calculate_work_hours_by_week(df):
-    df = df[df['message'].str.contains(r"\b(in|out)\b", na=False)].copy()
-    df['week'] = df['timestamp'].dt.isocalendar().week
-    df['year'] = df['timestamp'].dt.isocalendar().year
-    df['date'] = df['timestamp'].dt.date
+def generate_clock_logs(df):
+    df = df[df['message'].str.contains(r'\b(in|out)\b')].copy()
+    df['Week Start'] = df['timestamp'].dt.to_period('W-MON').apply(lambda r: r.start_time)
+    df['Week End'] = df['Week Start'] + timedelta(days=6)
+    
+    clock_logs = []
 
-    # Get latest 3 weeks
-    latest_weeks = df[['year', 'week']].drop_duplicates().sort_values(['year', 'week'], ascending=False).head(3)
-    df = df.merge(latest_weeks, on=['year', 'week'])
-
-    results = []
-    for (name, week, year), group in df.groupby(['name', 'week', 'year']):
+    for (name, week_start), group in df.groupby(['name', 'Week Start']):
         group = group.sort_values(by='timestamp')
         times = group['timestamp'].tolist()
         messages = group['message'].tolist()
-        total = timedelta()
         i = 0
         while i < len(messages) - 1:
             if 'in' in messages[i] and 'out' in messages[i + 1]:
-                total += times[i + 1] - times[i]
+                clock_logs.append({
+                    'Name': name,
+                    'Clock In': times[i],
+                    'Clock Out': times[i + 1],
+                    'Duration (hrs)': round((times[i + 1] - times[i]).total_seconds() / 3600, 2),
+                    'Week Start': week_start,
+                    'Week Range': f"{week_start.strftime('%b %d')} - {(week_start + timedelta(days=6)).strftime('%b %d')}"
+                })
                 i += 2
             else:
                 i += 1
-        week_start = min(group['date'])
-        week_end = max(group['date'])
-        results.append({
-            'Name': name,
-            'Week': f"{week}",
-            'Date Range': f"{week_start.strftime('%b %d')} - {week_end.strftime('%b %d')}",
-            'Total Hours': round(total.total_seconds() / 3600, 2)
-        })
-    return pd.DataFrame(results)
+    return pd.DataFrame(clock_logs)
 
 if uploaded_file:
     file_text = uploaded_file.read().decode("utf-8")
@@ -70,9 +63,27 @@ if uploaded_file:
     if df.empty or "message" not in df.columns:
         st.error("❌ Format issue: Could not extract messages. Please upload a valid WhatsApp group .txt file.")
     else:
-        hours_df = calculate_work_hours_by_week(df)
-        st.success("✅ Successfully processed the chat file!")
-        st.dataframe(hours_df)
+        log_df = generate_clock_logs(df)
 
-        csv = hours_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download CSV", data=csv, file_name="weekly_work_hours.csv", mime="text/csv")
+        if log_df.empty:
+            st.warning("No valid clock in/out pairs found.")
+        else:
+            st.success("✅ Successfully extracted clock in/out logs!")
+
+            # Show full log table
+            st.subheader("📋 Weekly Clock In/Out Logs")
+            st.dataframe(log_df[['Name', 'Week Range', 'Clock In', 'Clock Out', 'Duration (hrs)']])
+
+            # Group by week and person for summary
+            summary_df = log_df.groupby(['Name', 'Week Range'])['Duration (hrs)'].sum().reset_index()
+            summary_df = summary_df.rename(columns={'Duration (hrs)': 'Total Hours'})
+
+            st.subheader("📊 Weekly Total Hours Per Person")
+            st.dataframe(summary_df)
+
+            # Download option
+            csv = log_df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Clock Log CSV", data=csv, file_name="clock_logs.csv", mime="text/csv")
+
+            summary_csv = summary_df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download Weekly Summary CSV", data=summary_csv, file_name="weekly_summary.csv", mime="text/csv")
