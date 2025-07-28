@@ -108,15 +108,12 @@ def get_last_week_data(daily_df):
         total_hours.rename(columns={"Hours Worked": "Total Hours This Week"}, inplace=True)
         last_week_df = last_week_df.merge(total_hours, on="Name")
 
-        # Format: Remove repeated names, dates, and days
-        last_week_df["Name_display"] = last_week_df["Name"]
-        last_week_df["Date_display"] = last_week_df["Date"]
-        last_week_df["Day_display"] = last_week_df["Day"]
+        # Replace repeated Name, Date, Day with blanks using transform and duplicated
+        last_week_df["Name_display"] = last_week_df["Name"].mask(last_week_df["Name"].duplicated())
+        last_week_df["Date_display"] = last_week_df.groupby("Name")["Date"].transform(lambda x: x.mask(x.duplicated()))
+        last_week_df["Day_display"] = last_week_df.groupby("Name")["Day"].transform(lambda x: x.mask(x.duplicated()))
 
-        last_week_df.loc[last_week_df["Name_display"].duplicated(), "Name_display"] = ""
-        last_week_df["Date_display"] = last_week_df.groupby("Name")["Date_display"].apply(lambda x: x.mask(x.duplicated()))
-        last_week_df["Day_display"] = last_week_df.groupby("Name")["Day_display"].apply(lambda x: x.mask(x.duplicated()))
-
+        # Show total only once per Name
         last_week_df["Total Hours This Week"] = last_week_df.groupby("Name")["Total Hours This Week"].transform(
             lambda x: [x.iloc[0]] + [''] * (len(x) - 1)
         )
