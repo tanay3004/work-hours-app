@@ -2,24 +2,28 @@ import streamlit as st
 import pandas as pd
 import re
 from datetime import datetime, timedelta
+from io import BytesIO
 
-st.set_page_config(page_title="WhatsApp Work Hours", layout="wide")
-st.title("🕒 WhatsApp Weekly Clock In/Out Tracker")
-st.markdown("Upload your exported WhatsApp group chat (.txt) to view individual clock in/out times and total hours per week (Monday to Sunday).")
+st.set_page_config(page_title="WhatsApp Work Hours", layout="centered")
+st.title("🕒 WhatsApp Work Hours Calculator") 
+st.markdown("Upload your exported WhatsApp group chat (.txt) to calculate total hours worked per person.")
 
 uploaded_file = st.file_uploader("📂 Upload WhatsApp .txt file", type=["txt"])
 
+# --- Helper Functions ---
 def parse_custom_format(file_text):
-    pattern = r"\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}:\d{2})\u202f([APM]+)\] (.*?): (.*)"
+    pattern = r"^\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})?\s?[APMapm]{2})\] (.*?): (.*)"
     records = []
-
     for line in file_text.splitlines():
         match = re.match(pattern, line)
         if match:
-            date_str, time_str, ampm, name, message = match.groups()
-            timestamp_str = f"{date_str} {time_str} {ampm}"
+            date_str, time_str, name, message = match.groups()
+            timestamp_str = f"{date_str} {time_str.strip()}"
             try:
-                timestamp = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M:%S %p")
+                try:
+                    timestamp = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M %p")
+                except ValueError:
+                    timestamp = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M:%S %p")
                 records.append({
                     "name": name.strip(),
                     "timestamp": timestamp,
@@ -29,33 +33,101 @@ def parse_custom_format(file_text):
                 continue
     return pd.DataFrame(records)
 
-def generate_clock_logs(df):
-    df = df[df['message'].str.contains(r'\b(in|out)\b')].copy()
-    df['Week Start'] = df['timestamp'].dt.to_period('W-MON').apply(lambda r: r.start_time)
-    df['Week End'] = df['Week Start'] + timedelta(days=6)
-    
-    clock_logs = []
+def get_week_range(date):
+    monday = date - timedelta(days=date.weekday())
+    sunday = monday + timedelta(days=6)
+    return monday, sunday, f"{monday.strftime('%b %d')} - {sunday.strftime('%b %d')} {sunday.year}"
 
-    for (name, week_start), group in df.groupby(['name', 'Week Start']):
+def calculate_hours(df):
+    df = df[df['message'].str.contains(r'\bin\b|\bout\b|\blunch\b|\bback\b|\breturn\b', na=False)].copy()
+    df['date'] = df['timestamp'].dt.date
+    df['week'] = df['timestamp'].dt.isocalendar().week
+    df['year'] = df['timestamp'].dt.isocalendar().year
+
+    latest_weeks = df[['year', 'week']].drop_duplicates().sort_values(['year', 'week'], ascending=False).head(4)
+    df = df.merge(latest_weeks, on=['year', 'week'])
+
+    daily_records = []
+
+    for (name, date), group in df.groupby(['name', 'date']):
         group = group.sort_values(by='timestamp')
         times = group['timestamp'].tolist()
         messages = group['message'].tolist()
         i = 0
         while i < len(messages) - 1:
-            if 'in' in messages[i] and 'out' in messages[i + 1]:
-                clock_logs.append({
+            msg1 = messages[i]
+            msg2 = messages[i + 1]
+            if any(x in msg1 for x in ['in', 'back', 'return']) and any(x in msg2 for x in ['out', 'lunch']):
+                duration = times[i + 1] - times[i]
+                clock_in = times[i].strftime('%I:%M %p')
+                clock_out = times[i + 1].strftime('%I:%M %p')
+                week_range = get_week_range(times[i])[2]
+                daily_records.append({
                     'Name': name,
-                    'Clock In': times[i],
-                    'Clock Out': times[i + 1],
-                    'Duration (hrs)': round((times[i + 1] - times[i]).total_seconds() / 3600, 2),
-                    'Week Start': week_start,
-                    'Week Range': f"{week_start.strftime('%b %d')} - {(week_start + timedelta(days=6)).strftime('%b %d')}"
+                    'Date': date.strftime('%b %d, %Y'),
+                    'Day': times[i].strftime('%A'),
+                    'Week': week_range,
+                    'Clock In': clock_in,
+                    'Clock Out': clock_out,
+                    'Hours Worked': round(duration.total_seconds() / 3600, 2)
                 })
                 i += 2
             else:
                 i += 1
-    return pd.DataFrame(clock_logs)
 
+    daily_df = pd.DataFrame(daily_records)
+
+    if not daily_df.empty:
+        weekly_summary = (
+            daily_df.groupby(['Name', 'Week'])['Hours Worked']
+            .sum().reset_index()
+            .rename(columns={'Hours Worked': 'Total Hours'})
+        )
+    else:
+        weekly_summary = pd.DataFrame()
+
+    return daily_df, weekly_summary
+
+def get_last_week_data(daily_df):
+    if daily_df.empty:
+        return pd.DataFrame(), None, None
+
+    temp_df = daily_df.copy()
+    temp_df['Date_Parsed'] = pd.to_datetime(temp_df['Date'])
+
+    latest_date = temp_df['Date_Parsed'].max().date()
+    week_monday = latest_date - timedelta(days=latest_date.weekday())
+    week_sunday = week_monday + timedelta(days=6)
+
+    last_week_df = temp_df[
+        temp_df['Date_Parsed'].dt.date.between(week_monday, week_sunday)
+    ].copy()
+
+    if not last_week_df.empty:
+        total_hours = last_week_df.groupby("Name")["Hours Worked"].sum().reset_index()
+        total_hours.rename(columns={"Hours Worked": "Total Hours This Week"}, inplace=True)
+        last_week_df = last_week_df.merge(total_hours, on="Name")
+        last_week_df["Total Hours This Week"] = last_week_df.groupby("Name")["Total Hours This Week"].transform(
+            lambda x: [x.iloc[0]] + [''] * (len(x) - 1)
+        )
+
+        # Remove repeated values for Name, Date, Day
+        last_week_df['Name'] = last_week_df['Name'].mask(last_week_df['Name'].duplicated())
+        last_week_df['Date'] = last_week_df['Date'].mask(last_week_df.duplicated(subset=['Name', 'Date']))
+        last_week_df['Day'] = last_week_df['Day'].mask(last_week_df.duplicated(subset=['Name', 'Day']))
+
+        last_week_df.drop(columns=["Week", "Date_Parsed"], errors='ignore', inplace=True)
+
+    return last_week_df, week_monday, week_sunday
+
+def to_excel_bytes(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    output.seek(0)
+    return output.getvalue()
+
+# --- Main Execution ---
 if uploaded_file:
     file_text = uploaded_file.read().decode("utf-8")
     df = parse_custom_format(file_text)
@@ -63,27 +135,38 @@ if uploaded_file:
     if df.empty or "message" not in df.columns:
         st.error("❌ Format issue: Could not extract messages. Please upload a valid WhatsApp group .txt file.")
     else:
-        log_df = generate_clock_logs(df)
+        daily_df, weekly_df = calculate_hours(df)
 
-        if log_df.empty:
-            st.warning("No valid clock in/out pairs found.")
+        if daily_df.empty:
+            st.warning("⚠ No valid IN/OUT pairs found.")
         else:
-            st.success("✅ Successfully extracted clock in/out logs!")
+            st.success("✅ Successfully processed the chat file!")
 
-            # Show full log table
-            st.subheader("📋 Weekly Clock In/Out Logs")
-            st.dataframe(log_df[['Name', 'Week Range', 'Clock In', 'Clock Out', 'Duration (hrs)']])
+            # --- Daily Work Log ---
+            st.subheader("🧾 Daily Work Log")
+            st.dataframe(daily_df)
+            st.download_button("📥 Download Daily Logs (Excel)",
+                               data=to_excel_bytes(daily_df),
+                               file_name="Daily_Work_Log.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            # Group by week and person for summary
-            summary_df = log_df.groupby(['Name', 'Week Range'])['Duration (hrs)'].sum().reset_index()
-            summary_df = summary_df.rename(columns={'Duration (hrs)': 'Total Hours'})
+            # --- Weekly Summary ---
+            st.subheader("📊 Weekly Total Hours per Person")
+            st.dataframe(weekly_df)
+            st.download_button("📥 Download Weekly Summary (Excel)",
+                               data=to_excel_bytes(weekly_df),
+                               file_name="Weekly_Total_Hours_Summary.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            st.subheader("📊 Weekly Total Hours Per Person")
-            st.dataframe(summary_df)
+            # --- Last Week Workday Timesheet ---
+            last_week_df, last_monday, last_sunday = get_last_week_data(daily_df)
+            if not last_week_df.empty:
+                title = f"{last_monday.strftime('%b %d')} - {last_sunday.strftime('%b %d')} {last_sunday.year} WORKDAY TIMESHEET"
+                st.subheader(f"📆 {title}")
+                st.dataframe(last_week_df)
 
-            # Download option
-            csv = log_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Clock Log CSV", data=csv, file_name="clock_logs.csv", mime="text/csv")
-
-            summary_csv = summary_df.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Weekly Summary CSV", data=summary_csv, file_name="weekly_summary.csv", mime="text/csv")
+                xlsx_name = title.replace(" ", "_") + ".xlsx"
+                st.download_button(f"📥 Download {title} (Excel)",
+                                   data=to_excel_bytes(last_week_df),
+                                   file_name=xlsx_name,
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
