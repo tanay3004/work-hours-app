@@ -5,36 +5,39 @@ from datetime import datetime, timedelta
 from io import BytesIO
 
 st.set_page_config(page_title="WhatsApp Work Hours", layout="centered")
-
-st.title("🕒 WhatsApp Work Hours Calculator") 
+st.title("🕒 WhatsApp Work Hours Calculator")
 st.markdown("Upload your exported WhatsApp group chat (.txt) to calculate total hours worked per person.")
 
 uploaded_file = st.file_uploader("📂 Upload WhatsApp .txt file", type=["txt"])
 
-# --- Helper Functions ---
+# --- 1. FIXED PARSER: Handles both Android & iPhone formats ---
 def parse_custom_format(file_text):
-    # Updated regex pattern for WhatsApp export format
-    pattern = r"^(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})?\s?[APMapm]{2}) - (.*?): (.*)"
     records = []
     for line in file_text.splitlines():
-        match = re.match(pattern, line)
+        # iPhone/Android with dash
+        match_dash = re.match(r"^(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})?\s?[APMapm]{2}) - (.*?): (.*)", line)
+        # Android with square brackets
+        match_bracket = re.match(r"^\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})?\s?[APMapm]{2})\] (.*?): (.*)", line)
+
+        match = match_dash or match_bracket
         if match:
             date_str, time_str, name, message = match.groups()
             timestamp_str = f"{date_str} {time_str.strip()}"
             try:
-                try:
-                    timestamp = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M %p")
-                except ValueError:
-                    timestamp = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M:%S %p")
-                records.append({
-                    "name": name.strip(),
-                    "timestamp": timestamp,
-                    "message": message.strip().lower()
-                })
+                timestamp = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M %p")
             except ValueError:
-                continue
+                try:
+                    timestamp = datetime.strptime(timestamp_str, "%m/%d/%y %I:%M:%S %p")
+                except ValueError:
+                    continue
+            records.append({
+                "name": name.strip(),
+                "timestamp": timestamp,
+                "message": message.strip().lower()
+            })
     return pd.DataFrame(records)
 
+# --- 2. Helper Functions ---
 def get_week_range(date):
     monday = date - timedelta(days=date.weekday())
     sunday = monday + timedelta(days=6)
@@ -90,6 +93,7 @@ def calculate_hours(df):
 
     return daily_df, weekly_summary
 
+# --- 3. Clean Last Week Output ---
 def get_last_week_data(daily_df):
     if daily_df.empty:
         return pd.DataFrame(), None, None
@@ -110,21 +114,14 @@ def get_last_week_data(daily_df):
         total_hours.rename(columns={"Hours Worked": "Total Hours This Week"}, inplace=True)
         last_week_df = last_week_df.merge(total_hours, on="Name")
 
-        # Clear repeated entries
+        # Remove Week column and apply masking
+        last_week_df.drop(columns=["Week", "Date_Parsed"], inplace=True)
         last_week_df["Name"] = last_week_df["Name"].mask(last_week_df["Name"].duplicated())
-        last_week_df["Date_display"] = last_week_df.groupby("Name")["Date"].mask(
-            last_week_df.groupby("Name")["Date"].duplicated()
-        )
-        last_week_df["Day_display"] = last_week_df.groupby("Name")["Day"].mask(
-            last_week_df.groupby("Name")["Day"].duplicated()
-        )
-
+        last_week_df["Date"] = last_week_df.groupby("Name")["Date"].transform(lambda x: x.mask(x.duplicated()))
+        last_week_df["Day"] = last_week_df.groupby("Name")["Day"].transform(lambda x: x.mask(x.duplicated()))
         last_week_df["Total Hours This Week"] = last_week_df.groupby("Name")["Total Hours This Week"].transform(
             lambda x: [x.iloc[0]] + [''] * (len(x) - 1)
         )
-
-        last_week_df.drop(columns=["Date_Parsed", "Week", "Date", "Day"], inplace=True)
-        last_week_df.rename(columns={"Date_display": "Date", "Day_display": "Day"}, inplace=True)
 
     return last_week_df, week_monday, week_sunday
 
@@ -135,7 +132,7 @@ def to_excel_bytes(df):
     output.seek(0)
     return output.getvalue()
 
-# --- Main Execution ---
+# --- 4. Main App Execution ---
 if uploaded_file:
     file_text = uploaded_file.read().decode("utf-8")
     df = parse_custom_format(file_text)
@@ -150,7 +147,7 @@ if uploaded_file:
         else:
             st.success("✅ Successfully processed the chat file!")
 
-            # --- Daily Work Log ---
+            # Daily Logs
             st.subheader("🧾 Daily Work Log")
             st.dataframe(daily_df)
             st.download_button("📥 Download Daily Logs (Excel)",
@@ -158,7 +155,7 @@ if uploaded_file:
                                file_name="Daily_Work_Log.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            # --- Weekly Summary ---
+            # Weekly Summary
             st.subheader("📊 Weekly Total Hours per Person")
             st.dataframe(weekly_df)
             st.download_button("📥 Download Weekly Summary (Excel)",
@@ -166,15 +163,13 @@ if uploaded_file:
                                file_name="Weekly_Total_Hours_Summary.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-            # --- Last Week Workday Timesheet ---
+            # Final Table: Last Week’s Display
             last_week_df, last_monday, last_sunday = get_last_week_data(daily_df)
             if not last_week_df.empty:
                 title = f"{last_monday.strftime('%b %d')} - {last_sunday.strftime('%b %d')} {last_sunday.year} WORKDAY TIMESHEET"
                 st.subheader(f"📆 {title}")
                 st.dataframe(last_week_df)
-
-                csv_name = title.replace(" ", "_") + ".xlsx"
                 st.download_button(f"📥 Download {title} (Excel)",
                                    data=to_excel_bytes(last_week_df),
-                                   file_name=csv_name,
+                                   file_name=title.replace(" ", "_") + ".xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
