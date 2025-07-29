@@ -5,14 +5,16 @@ from datetime import datetime, timedelta
 from io import BytesIO
 
 st.set_page_config(page_title="WhatsApp Work Hours", layout="centered")
-st.title("🕒 WhatsApp Work Hours Calculator")
+
+st.title("🕒 WhatsApp Work Hours Calculator") 
 st.markdown("Upload your exported WhatsApp group chat (.txt) to calculate total hours worked per person.")
 
 uploaded_file = st.file_uploader("📂 Upload WhatsApp .txt file", type=["txt"])
 
 # --- Helper Functions ---
 def parse_custom_format(file_text):
-    pattern = r"^\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})?\s?[APMapm]{2})\] (.?): (.)"
+    # Updated regex pattern for WhatsApp export format
+    pattern = r"^(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})?\s?[APMapm]{2}) - (.*?): (.*)"
     records = []
     for line in file_text.splitlines():
         match = re.match(pattern, line)
@@ -108,28 +110,21 @@ def get_last_week_data(daily_df):
         total_hours.rename(columns={"Hours Worked": "Total Hours This Week"}, inplace=True)
         last_week_df = last_week_df.merge(total_hours, on="Name")
 
-        # Format Name, Date, Day to show only once per person/day
-        last_week_df["Name_display"] = last_week_df["Name"]
-        last_week_df["Date_display"] = last_week_df["Date"]
-        last_week_df["Day_display"] = last_week_df["Day"]
+        # Clear repeated entries
+        last_week_df["Name"] = last_week_df["Name"].mask(last_week_df["Name"].duplicated())
+        last_week_df["Date_display"] = last_week_df.groupby("Name")["Date"].mask(
+            last_week_df.groupby("Name")["Date"].duplicated()
+        )
+        last_week_df["Day_display"] = last_week_df.groupby("Name")["Day"].mask(
+            last_week_df.groupby("Name")["Day"].duplicated()
+        )
 
-        last_week_df["Name_display"] = last_week_df.groupby("Name")["Name_display"].apply(lambda x: x.mask(x.duplicated()))
-        last_week_df["Date_display"] = last_week_df.groupby(["Name", "Date_display"])["Date_display"].apply(lambda x: x.mask(x.duplicated()))
-        last_week_df["Day_display"] = last_week_df.groupby(["Name", "Day_display"])["Day_display"].apply(lambda x: x.mask(x.duplicated()))
-
-        # Show total hours once per person
         last_week_df["Total Hours This Week"] = last_week_df.groupby("Name")["Total Hours This Week"].transform(
             lambda x: [x.iloc[0]] + [''] * (len(x) - 1)
         )
 
-        last_week_df.drop(columns=["Name", "Date", "Day", "Week", "Date_Parsed"], inplace=True)
-        last_week_df.rename(columns={
-            "Name_display": "Name",
-            "Date_display": "Date",
-            "Day_display": "Day"
-        }, inplace=True)
-
-        last_week_df.replace(to_replace=[None, 'None', pd.NA, float('nan')], value='', inplace=True)
+        last_week_df.drop(columns=["Date_Parsed", "Week", "Date", "Day"], inplace=True)
+        last_week_df.rename(columns={"Date_display": "Date", "Day_display": "Day"}, inplace=True)
 
     return last_week_df, week_monday, week_sunday
 
