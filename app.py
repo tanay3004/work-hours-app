@@ -108,12 +108,10 @@ def get_last_week_data(daily_df):
         total_hours.rename(columns={"Hours Worked": "Total Hours This Week"}, inplace=True)
         last_week_df = last_week_df.merge(total_hours, on="Name")
 
-        # Replace repeated Name, Date, Day with blanks using transform and duplicated
-        last_week_df["Name_display"] = last_week_df["Name"].mask(last_week_df["Name"].duplicated())
-        last_week_df["Date_display"] = last_week_df.groupby("Name")["Date"].transform(lambda x: x.mask(x.duplicated()))
-        last_week_df["Day_display"] = last_week_df.groupby("Name")["Day"].transform(lambda x: x.mask(x.duplicated()))
+        last_week_df["Name_display"] = last_week_df["Name"].mask(last_week_df["Name"].duplicated(), "")
+        last_week_df["Date_display"] = last_week_df.groupby("Name")["Date"].transform(lambda x: x.mask(x.duplicated(), ""))
+        last_week_df["Day_display"] = last_week_df.groupby(["Name", "Date"])["Day"].transform(lambda x: x.mask(x.duplicated(), ""))
 
-        # Show total only once per Name
         last_week_df["Total Hours This Week"] = last_week_df.groupby("Name")["Total Hours This Week"].transform(
             lambda x: [x.iloc[0]] + [''] * (len(x) - 1)
         )
@@ -171,7 +169,9 @@ if uploaded_file:
             last_week_df, last_monday, last_sunday = get_last_week_data(daily_df)
             if not last_week_df.empty:
                 title = f"{last_monday.strftime('%b %d')} - {last_sunday.strftime('%b %d')} {last_sunday.year} WORKDAY TIMESHEET"
-                st.subheader(f"📆 {title}")
+                file_label = uploaded_file.name if uploaded_file else "Workday Timesheet"
+                st.subheader(f"📆 {file_label}")
+                st.markdown(f"**{title}**")
                 st.dataframe(last_week_df)
 
                 csv_name = title.replace(" ", "_") + ".xlsx"
