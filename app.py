@@ -1,98 +1,102 @@
-import re
-import pandas as pd
-from io import BytesIO
-import base64
 import streamlit as st
+import pandas as pd
+import re
+from datetime import datetime
+from io import StringIO
 
-# Streamlit Page Config
 st.set_page_config(page_title="WhatsApp Work Hours Calculator", layout="wide")
+
 st.title("🕒 WhatsApp Work Hours Calculator")
 st.markdown("Upload your exported WhatsApp group chat (.txt) to calculate total hours worked per person.")
-st.markdown("### 📁 Upload WhatsApp .txt file")
 
-# File uploader
-uploaded_file = st.file_uploader("Drag and drop file here", type="txt")
+uploaded_file = st.file_uploader("📂 Upload WhatsApp .txt file", type=["txt"])
 
-# Parse chat messages
+# --------------------------
+# ✅ Flexible Regex Parser
+# --------------------------
 def parse_messages(text):
-    pattern = r'\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}:\d{2} (?:AM|PM))\] (.*?): (.*)'
-    matches = re.findall(pattern, text)
+    pattern1 = r'\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})? (?:AM|PM))\] (.*?): (.*)'
+    pattern2 = r'(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})? (?:AM|PM)) - (.*?): (.*)'
+
     messages = []
-    for date, time, name, message in matches:
-        messages.append({"Date": date, "Time": time, "Name": name.strip(), "Message": message.strip()})
+    for match in re.findall(pattern1, text):
+        messages.append({"Date": match[0], "Time": match[1], "Name": match[2].strip(), "Message": match[3].strip()})
+    for match in re.findall(pattern2, text):
+        messages.append({"Date": match[0], "Time": match[1], "Name": match[2].strip(), "Message": match[3].strip()})
+
     return pd.DataFrame(messages)
 
-# Label as Clock In / Clock Out
-def label_clock_direction(msg):
-    msg = msg.lower()
-    if "in" in msg and not any(word in msg for word in ["login", "join", "joining", "informed", "not in", "log in late"]):
-        return "Clock In"
-    elif any(x in msg for x in ["out", "done", "bye"]) and "without" not in msg:
-        return "Clock Out"
-    return None
+# --------------------------
+# ⏱ Clock-In/Clock-Out Logic
+# --------------------------
+def extract_hours(df):
+    df["DateTime"] = df["Date"] + " " + df["Time"]
+    df["DateTime"] = pd.to_datetime(df["DateTime"], errors="coerce")
 
-# Generate downloadable Excel
-def to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Work Hours')
-    return output.getvalue()
+    # Filter messages like "Tanay in" or "Tanay out"
+    df = df[df["Message"].str.contains("in|out", case=False, na=False)]
 
-# Main Logic
-if uploaded_file:
-    text = uploaded_file.read().decode("utf-8")
-    df = parse_messages(text)
+    records = []
+    for name, group in df.groupby("Name"):
+        group = group.sort_values("DateTime")
+        for date, day_df in group.groupby(group["DateTime"].dt.date):
+            day_msgs = day_df["Message"].str.lower().tolist()
+            day_times = day_df["DateTime"].tolist()
 
-    if df.empty:
-        st.error("❌ Format issue: Could not extract messages. Please upload a valid WhatsApp group .txt file.")
-    else:
-        df["Timestamp"] = pd.to_datetime(df["Date"] + " " + df["Time"])
-        df["Direction"] = df["Message"].apply(label_clock_direction)
-        df = df[df["Direction"].notnull()].copy()
-        df.sort_values(["Name", "Timestamp"], inplace=True)
+            # Handle multiple ins and outs per day
+            in_times = [t for m, t in zip(day_msgs, day_times) if "in" in m]
+            out_times = [t for m, t in zip(day_msgs, day_times) if "out" in m]
 
-        # Pair Clock In and Clock Out
-        work_entries = []
-        for name, group in df.groupby("Name"):
-            group = group.reset_index(drop=True)
-            i = 0
-            while i < len(group) - 1:
-                if group.loc[i, "Direction"] == "Clock In" and group.loc[i + 1, "Direction"] == "Clock Out":
-                    clock_in = group.loc[i, "Timestamp"]
-                    clock_out = group.loc[i + 1, "Timestamp"]
-                    hours_worked = round((clock_out - clock_in).total_seconds() / 3600, 2)
-                    work_entries.append({
-                        "Name": name,
-                        "Date": clock_in.date(),
-                        "Day": clock_in.strftime("%A"),
-                        "Clock In": clock_in.strftime("%I:%M %p"),
-                        "Clock Out": clock_out.strftime("%I:%M %p"),
-                        "Hours Worked": hours_worked
-                    })
-                    i += 2
-                else:
-                    i += 1
+            for i in range(min(len(in_times), len(out_times))):
+                clock_in = in_times[i]
+                clock_out = out_times[i]
+                hours = round((clock_out - clock_in).total_seconds() / 3600, 2)
+                records.append({
+                    "Name": name,
+                    "Date": clock_in.strftime("%b %d, %Y"),
+                    "Day": clock_in.strftime("%A"),
+                    "Clock In": clock_in.strftime("%I:%M %p"),
+                    "Clock Out": clock_out.strftime("%I:%M %p"),
+                    "Hours Worked": hours
+                })
 
-        final_df = pd.DataFrame(work_entries)
+    result = pd.DataFrame(records)
 
-        # Add total weekly hours
-        final_df["Total Hours This Week"] = final_df.groupby("Name")["Hours Worked"].transform("sum")
+    # ➕ Total hours per person for the week
+    if not result.empty:
+        weekly = result.groupby("Name")["Hours Worked"].sum().round(2).reset_index()
+        weekly.columns = ["Name", "Total Hours This Week"]
+        result = result.merge(weekly, on="Name", how="left")
 
-        # Blank repeating values for readability
-        final_df["Name"] = final_df.groupby("Name")["Name"].transform(lambda x: [x.iloc[0]] + [""] * (len(x) - 1))
-        final_df["Date"] = final_df.groupby(["Name", "Date"])["Date"].transform(lambda x: [x.iloc[0]] + [""] * (len(x) - 1))
-        final_df["Day"] = final_df.groupby(["Name", "Day"])["Day"].transform(lambda x: [x.iloc[0]] + [""] * (len(x) - 1))
-        final_df["Total Hours This Week"] = final_df.groupby("Name")["Total Hours This Week"].transform(lambda x: [x.iloc[0]] + [""] * (len(x) - 1))
+    return result
 
-        # Replace any None with blank string
-        final_df = final_df.fillna("")
+# --------------------------
+# 📦 Handle Upload
+# --------------------------
+if uploaded_file is not None:
+    stringio = StringIO(uploaded_file.getvalue().decode("utf-8"))
+    raw_text = stringio.read()
 
-        st.success("✅ Messages processed successfully.")
-        st.dataframe(final_df, use_container_width=True)
+    try:
+        parsed_df = parse_messages(raw_text)
+        if parsed_df.empty:
+            st.error("❌ Format issue: Could not extract messages. Please upload a valid WhatsApp group .txt file.")
+        else:
+            hours_df = extract_hours(parsed_df)
 
-        # Download link
-        excel_data = to_excel(final_df)
-        b64 = base64.b64encode(excel_data).decode()
-        st.markdown(f'<a href="data:application/octet-stream;base64,{b64}" download="work_hours.xlsx">📥 Download Excel File</a>', unsafe_allow_html=True)
-else:
-    st.info("📂 Please upload a WhatsApp chat .txt file exported from a group to begin.")
+            # Replace NaN with blank
+            hours_df = hours_df.fillna("")
+
+            # Only show day once per person per date
+            hours_df["Day"] = hours_df.groupby(["Name", "Date"])["Day"].transform(
+                lambda x: [x.iloc[0]] + [""] * (len(x) - 1)
+            )
+
+            # Format 'Total Hours This Week' to 2 decimals, show only once per Name
+            hours_df["Total Hours This Week"] = hours_df.groupby("Name")["Total Hours This Week"]\
+                .transform(lambda x: [f"{x.iloc[0]:.2f}"] + [""] * (len(x) - 1))
+
+            st.success("✅ File parsed successfully!")
+            st.dataframe(hours_df, use_container_width=True)
+    except Exception as e:
+        st.error(f"❌ An error occurred: {e}")
