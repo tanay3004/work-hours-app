@@ -108,9 +108,9 @@ def get_last_week_data(daily_df):
         total_hours.rename(columns={"Hours Worked": "Total Hours This Week"}, inplace=True)
         last_week_df = last_week_df.merge(total_hours, on="Name")
 
-        last_week_df["Name_display"] = last_week_df["Name"].mask(last_week_df["Name"].duplicated(), "")
-        last_week_df["Date_display"] = last_week_df.groupby("Name")["Date"].transform(lambda x: x.mask(x.duplicated(), ""))
-        last_week_df["Day_display"] = last_week_df.groupby(["Name", "Date"])["Day"].transform(lambda x: x.mask(x.duplicated(), ""))
+        last_week_df["Name_display"] = last_week_df["Name"].mask(last_week_df["Name"].duplicated(), '')
+        last_week_df["Date_display"] = last_week_df.groupby("Name")["Date"].transform(lambda x: x.mask(x.duplicated(), ''))
+        last_week_df["Day_display"] = last_week_df.groupby("Name")["Day"].transform(lambda x: x.mask(x.duplicated(), ''))
 
         last_week_df["Total Hours This Week"] = last_week_df.groupby("Name")["Total Hours This Week"].transform(
             lambda x: [x.iloc[0]] + [''] * (len(x) - 1)
@@ -127,10 +127,14 @@ def get_last_week_data(daily_df):
 
     return last_week_df, week_monday, week_sunday
 
-def to_excel_bytes(df):
+def to_excel_bytes_with_title(df, title):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Sheet1')
+        df.to_excel(writer, sheet_name='Sheet1', startrow=1, index=False)
+        workbook = writer.book
+        worksheet = writer.sheets['Sheet1']
+        header_format = workbook.add_format({'bold': True, 'align': 'center', 'valign': 'vcenter', 'font_size': 14})
+        worksheet.merge_range(0, 0, 0, len(df.columns)-1, title, header_format)
     output.seek(0)
     return output.getvalue()
 
@@ -153,7 +157,7 @@ if uploaded_file:
             st.subheader("🧾 Daily Work Log")
             st.dataframe(daily_df)
             st.download_button("📥 Download Daily Logs (Excel)",
-                               data=to_excel_bytes(daily_df),
+                               data=to_excel_bytes_with_title(daily_df, "Daily Work Log"),
                                file_name="Daily_Work_Log.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
@@ -161,7 +165,7 @@ if uploaded_file:
             st.subheader("📊 Weekly Total Hours per Person")
             st.dataframe(weekly_df)
             st.download_button("📥 Download Weekly Summary (Excel)",
-                               data=to_excel_bytes(weekly_df),
+                               data=to_excel_bytes_with_title(weekly_df, "Weekly Total Hours Summary"),
                                file_name="Weekly_Total_Hours_Summary.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
@@ -169,13 +173,11 @@ if uploaded_file:
             last_week_df, last_monday, last_sunday = get_last_week_data(daily_df)
             if not last_week_df.empty:
                 title = f"{last_monday.strftime('%b %d')} - {last_sunday.strftime('%b %d')} {last_sunday.year} WORKDAY TIMESHEET"
-                file_label = uploaded_file.name if uploaded_file else "Workday Timesheet"
-                st.subheader(f"📆 {file_label}")
-                st.markdown(f"**{title}**")
+                st.subheader(f"📆 {title}")
                 st.dataframe(last_week_df)
 
                 csv_name = title.replace(" ", "_") + ".xlsx"
                 st.download_button(f"📥 Download {title} (Excel)",
-                                   data=to_excel_bytes(last_week_df),
+                                   data=to_excel_bytes_with_title(last_week_df, title),
                                    file_name=csv_name,
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
