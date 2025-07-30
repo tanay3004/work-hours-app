@@ -9,8 +9,7 @@ st.markdown("Upload your exported WhatsApp group chat (.txt) to calculate total 
 
 uploaded_file = st.file_uploader("📂 Upload WhatsApp .txt file", type=["txt"])
 
-# --- Helper Functions ---
-
+# --- Updated Format-Aware Parser ---
 def parse_custom_format(file_text):
     pattern1 = r"\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}:\d{2})\u202f([APM]+)\] (.*?): (.*)"
     pattern2 = r"(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2})\u202f([APM]+) - (.*?): (.*)"
@@ -42,6 +41,7 @@ def parse_custom_format(file_text):
 
     return pd.DataFrame(records)
 
+# --- Keep Everything Below Unchanged ---
 def get_week_range(date):
     monday = date - timedelta(days=date.weekday())
     sunday = monday + timedelta(days=6)
@@ -121,7 +121,6 @@ def get_last_week_data(daily_df):
     return last_week_df, last_monday, last_sunday
 
 # --- Main Execution ---
-
 if uploaded_file:
     file_text = uploaded_file.read().decode("utf-8")
     df = parse_custom_format(file_text)
@@ -136,7 +135,6 @@ if uploaded_file:
         else:
             st.success("✅ Successfully processed the chat file!")
 
-            # --- Daily Work Log ---
             st.subheader("🧾 Daily Work Log")
             st.dataframe(daily_df)
             st.download_button("📥 Download Daily Logs",
@@ -144,7 +142,6 @@ if uploaded_file:
                                file_name="Daily_Work_Log.csv",
                                mime="text/csv")
 
-            # --- Weekly Summary ---
             st.subheader("📊 Weekly Total Hours per Person")
             st.dataframe(weekly_df)
             st.download_button("📥 Download Weekly Summary",
@@ -152,7 +149,6 @@ if uploaded_file:
                                file_name="Weekly_Total_Hours_Summary.csv",
                                mime="text/csv")
 
-            # --- Last Week Timesheet ---
             last_week_df, last_monday, last_sunday = get_last_week_data(daily_df)
             if not last_week_df.empty:
                 title = f"{last_monday.strftime('%b %d')} - {last_sunday.strftime('%b %d')} {last_sunday.year} WORKDAY TIMESHEET"
