@@ -5,15 +5,20 @@ import io
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="WhatsApp Work Hours Calculator", layout="wide")
-st.markdown("## 🕒 WhatsApp Work Hours Calculator")
-st.markdown("Upload your exported WhatsApp group chat (.txt) to calculate total hours worked per person.")
 
+st.markdown("## 🕒 WhatsApp Work Hours Calculator")
+st.markdown(
+    "Upload your exported WhatsApp group chat (.txt) to calculate total hours worked per person."
+)
+
+# File Upload
 uploaded_file = st.file_uploader("📁 Upload WhatsApp .txt file", type=["txt"])
 
-# Regex pattern
+# Correct regex pattern for WhatsApp messages like: [7/23/25, 8:33:10 AM] Name: Message
 pattern = re.compile(
-    r"\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}(?::\d{2})? (?:AM|PM|am|pm))\] (.*?): (.*)"
+    r"\[(\d{1,2}/\d{1,2}/\d{2,4}), (\d{1,2}:\d{2}:\d{2} [APMapm]{2})\] (.*?): (.*)"
 )
+time_format = "%m/%d/%y, %I:%M:%S %p"
 
 def extract_messages(text):
     messages = []
@@ -23,10 +28,7 @@ def extract_messages(text):
         name = match.group(3).strip()
         message = match.group(4).strip()
         try:
-            try:
-                dt = datetime.strptime(f"{date_str}, {time_str}", "%m/%d/%y, %I:%M:%S %p")
-            except:
-                dt = datetime.strptime(f"{date_str}, {time_str}", "%m/%d/%y, %I:%M %p")
+            dt = datetime.strptime(f"{date_str}, {time_str}", time_format)
             messages.append((dt, name, message))
         except Exception:
             continue
@@ -63,8 +65,10 @@ def calculate_hours(df):
                 "Day": in_time.strftime("%A"),
                 "Clock In": in_time.strftime("%I:%M %p"),
                 "Clock Out": out_time.strftime("%I:%M %p"),
-                "Hours Worked": hours
+                "Hours Worked": hours,
+                "Date_Parsed": in_time.date()
             })
+
     return pd.DataFrame(result)
 
 def get_last_week_data(daily_df):
@@ -72,47 +76,47 @@ def get_last_week_data(daily_df):
         return pd.DataFrame(), None, None
 
     temp_df = daily_df.copy()
-    temp_df["Date_Parsed"] = pd.to_datetime(temp_df["Date"])
-    latest_date = temp_df["Date_Parsed"].max().date()
+    latest_date = temp_df['Date_Parsed'].max()
     week_monday = latest_date - timedelta(days=latest_date.weekday())
     week_sunday = week_monday + timedelta(days=6)
 
-    last_week_df = temp_df[
-        temp_df["Date_Parsed"].dt.date.between(week_monday, week_sunday)
+    week_df = temp_df[
+        temp_df["Date_Parsed"].between(week_monday, week_sunday)
     ].copy()
 
-    if not last_week_df.empty:
-        total_hours = last_week_df.groupby("Name")["Hours Worked"].sum().reset_index()
-        total_hours.rename(columns={"Hours Worked": "Total Hours This Week"}, inplace=True)
-        last_week_df = last_week_df.merge(total_hours, on="Name")
+    if not week_df.empty:
+        # Add total hours this week
+        totals = week_df.groupby("Name")["Hours Worked"].sum().reset_index()
+        totals.rename(columns={"Hours Worked": "Total Hours This Week"}, inplace=True)
+        week_df = week_df.merge(totals, on="Name")
 
-        # Formatting
-        last_week_df["Name"] = last_week_df["Name"].mask(last_week_df["Name"].duplicated())
-        last_week_df["Date"] = last_week_df.groupby("Name")["Date"].transform(lambda x: x.mask(x.duplicated()))
-        last_week_df["Day"] = last_week_df.groupby(["Name", "Date"])["Day"].transform(lambda x: x.mask(x.duplicated()))
-        last_week_df["Total Hours This Week"] = last_week_df.groupby("Name")["Total Hours This Week"].transform(
+        # Hide repeated Name, Date, Day
+        week_df["Name"] = week_df["Name"].mask(week_df["Name"].duplicated())
+        week_df["Date"] = week_df.groupby("Name")["Date"].transform(lambda x: x.mask(x.duplicated()))
+        week_df["Day"] = week_df.groupby(["Name", "Date"])["Day"].transform(lambda x: x.mask(x.duplicated()))
+        week_df["Total Hours This Week"] = week_df.groupby("Name")["Total Hours This Week"].transform(
             lambda x: [x.iloc[0]] + [''] * (len(x) - 1)
         )
 
-        last_week_df.drop(columns=["Date_Parsed"], inplace=True)
-        last_week_df.fillna("", inplace=True)
+        week_df = week_df.drop(columns=["Date_Parsed", "Week"], errors='ignore')
+        week_df = week_df.fillna("")
 
-    return last_week_df, week_monday, week_sunday
+    return week_df, week_monday, week_sunday
 
 def to_excel_bytes(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='LastWeekData')
+        df.to_excel(writer, index=False, sheet_name='Work Hours')
     return output.getvalue()
 
 # Main logic
 if uploaded_file is not None:
     try:
-        text = uploaded_file.read()
         try:
-            text = text.decode("utf-8")
-        except:
-            text = text.decode("utf-16")  # Fallback for WhatsApp export issues
+            text = uploaded_file.read().decode("utf-8")
+        except UnicodeDecodeError:
+            uploaded_file.seek(0)
+            text = uploaded_file.read().decode("utf-16")
 
         df = extract_messages(text)
 
@@ -121,19 +125,19 @@ if uploaded_file is not None:
         else:
             processed_df = preprocess_data(df)
             daily_df = calculate_hours(processed_df)
-            last_week_df, last_monday, last_sunday = get_last_week_data(daily_df)
+            final_df, monday, sunday = get_last_week_data(daily_df)
 
-            if not last_week_df.empty:
-                st.markdown(f"### 🗓️ Week Period WORKDAY TIMESHEET ({last_monday.strftime('%b %d')} - {last_sunday.strftime('%b %d')})")
-                st.dataframe(last_week_df, use_container_width=True)
+            if not final_df.empty:
+                st.markdown(f"### 📅 Week Period WORKDAY TIMESHEET ({monday.strftime('%b %d')} - {sunday.strftime('%b %d')})")
+                st.dataframe(final_df, use_container_width=True)
 
                 st.download_button(
                     label="📥 Download Excel",
-                    data=to_excel_bytes(last_week_df),
+                    data=to_excel_bytes(final_df),
                     file_name="WorkHours_LastWeek.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
-                st.warning("⚠️ No work hours found for the most recent week in the data.")
+                st.warning("⚠️ No work hours found for the most recent week.")
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
