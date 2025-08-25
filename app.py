@@ -88,6 +88,7 @@ def calculate_hours(df):
 
     return daily_df, weekly_summary
 
+# ✅ UPDATED FUNCTION ONLY THIS
 def get_last_week_data(daily_df):
     if daily_df.empty:
         return pd.DataFrame(), None, None
@@ -95,12 +96,14 @@ def get_last_week_data(daily_df):
     temp_df = daily_df.copy()
     temp_df['Date_Parsed'] = pd.to_datetime(temp_df['Date'])
 
-    latest_date = temp_df['Date_Parsed'].max().date()
-    week_monday = latest_date - timedelta(days=latest_date.weekday())
-    week_sunday = week_monday + timedelta(days=6)
+    # Always get last *completed* week (Mon–Sun), even if today is Monday
+    today = datetime.today().date()
+    this_week_monday = today - timedelta(days=today.weekday())
+    last_week_sunday = this_week_monday - timedelta(days=1)
+    last_week_monday = last_week_sunday - timedelta(days=6)
 
     last_week_df = temp_df[
-        temp_df['Date_Parsed'].dt.date.between(week_monday, week_sunday)
+        temp_df['Date_Parsed'].dt.date.between(last_week_monday, last_week_sunday)
     ].copy()
 
     if not last_week_df.empty:
@@ -125,7 +128,7 @@ def get_last_week_data(daily_df):
             "Day_display": "Day"
         }, inplace=True)
 
-    return last_week_df, week_monday, week_sunday
+    return last_week_df, last_week_monday, last_week_sunday
 
 def to_excel_bytes_with_title(df, title):
     output = BytesIO()
@@ -181,3 +184,4 @@ if uploaded_file:
                                    data=to_excel_bytes_with_title(last_week_df, title),
                                    file_name=csv_name,
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
